@@ -282,3 +282,114 @@ def d_study(
                 }
             )
     return pd.DataFrame(rows)
+
+
+def bootstrap_variance_components(
+    response_matrix: pd.DataFrame,
+    subject_col: str = "subject_id",
+    item_col: str = "item_id",
+    trial_col: str = "trial",
+    response_col: str = "response",
+    method: str = "moments",
+    n_boot: int = 2000,
+    ci: float = 0.95,
+    seed: int | None = None,
+) -> dict:
+    """Nonparametric bootstrap CIs for variance components by resampling subjects.
+
+    Subjects are the exchangeable unit: each bootstrap draw samples
+    ``n_subjects`` subjects with replacement, relabels duplicates so each
+    draw is treated as a distinct unit, and re-fits :func:`variance_components`.
+    Percentile CIs are reported. The full bootstrap distribution for each
+    component is also returned so callers can derive CIs for any function of
+    the components (e.g. :func:`g_coefficient`, :func:`intraclass_correlation`).
+
+    Parameters
+    ----------
+    response_matrix : pandas.DataFrame
+        Long-form responses, same schema as :func:`variance_components`.
+    subject_col, item_col, trial_col, response_col, method : str
+        Forwarded to :func:`variance_components`.
+    n_boot : int
+        Number of bootstrap replicates (>= 1).
+    ci : float
+        Confidence level in (0, 1).
+    seed : int | None
+        Seed for ``numpy.random.default_rng``.
+
+    Returns
+    -------
+    dict
+        Keys: ``subject``, ``item``, ``subject_item``, ``residual`` (point
+        estimates on the original sample), ``n_subjects``, ``n_items``,
+        ``n_reps_harmonic``, ``identifiable``, ``method`` (as in
+        :func:`variance_components`), plus ``ci`` (dict[str, tuple[float,
+        float]] per component), ``samples`` (dict[str, numpy.ndarray] of
+        length ``n_boot``), ``n_boot`` (int), and ``ci_level`` (float).
+    """
+    import pandas as pd
+
+    if n_boot < 1:
+        raise ValueError(f"n_boot must be >= 1; got {n_boot}.")
+    if not 0.0 < ci < 1.0:
+        raise ValueError(f"ci must be in (0, 1); got {ci}.")
+
+    point = variance_components(
+        response_matrix,
+        subject_col=subject_col,
+        item_col=item_col,
+        trial_col=trial_col,
+        response_col=response_col,
+        method=method,
+    )
+
+    subject_ids = response_matrix[subject_col].unique()
+    n_subjects = len(subject_ids)
+    rng = np.random.default_rng(seed)
+
+    by_subject = {sid: response_matrix[response_matrix[subject_col] == sid] for sid in subject_ids}
+
+    component_keys = ("subject", "item", "subject_item", "residual")
+    samples: dict[str, list[float]] = {k: [] for k in component_keys}
+
+    for _ in range(n_boot):
+        drawn = rng.choice(subject_ids, size=n_subjects, replace=True)
+        frames = []
+        for j, sid in enumerate(drawn):
+            block = by_subject[sid].copy()
+            block[subject_col] = f"__boot{j}__"
+            frames.append(block)
+        boot_df = pd.concat(frames, ignore_index=True)
+        try:
+            vc = variance_components(
+                boot_df,
+                subject_col=subject_col,
+                item_col=item_col,
+                trial_col=trial_col,
+                response_col=response_col,
+                method=method,
+            )
+        except ValueError:
+            continue  # skip degenerate draws (e.g. accidentally singular cell counts)
+        for k in component_keys:
+            samples[k].append(float(vc[k]))
+
+    alpha = (1.0 - ci) / 2.0
+    samples_np = {k: np.asarray(v, dtype=float) for k, v in samples.items()}
+    ci_dict = {
+        k: (
+            float(np.quantile(samples_np[k], alpha)),
+            float(np.quantile(samples_np[k], 1.0 - alpha)),
+        )
+        if len(samples_np[k]) > 0
+        else (float("nan"), float("nan"))
+        for k in component_keys
+    }
+
+    return {
+        **point,
+        "ci": ci_dict,
+        "samples": samples_np,
+        "n_boot": int(n_boot),
+        "ci_level": float(ci),
+    }
