@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from torch_measure.metrics.generalizability import (
+    bootstrap_variance_components,
     d_study,
     g_coefficient,
     intraclass_correlation,
@@ -277,6 +278,100 @@ class TestIntraclassCorrelation:
         vc = variance_components(df)
         icc3k = intraclass_correlation(vc, "ICC3k")
         assert icc3k == pytest.approx(g_coefficient(vc, n_items=vc["n_items"], n_reps=1, type="relative"))
+
+
+class TestBootstrapVarianceComponents:
+    def _df(self, seed: int = 0) -> pd.DataFrame:
+        return _synth_crossed_design(n_p=20, n_i=8, n_r=2, seed=seed)
+
+    def test_output_structure(self):
+        out = bootstrap_variance_components(self._df(), n_boot=50, seed=42)
+        for k in ("subject", "item", "subject_item", "residual"):
+            assert k in out
+            assert k in out["ci"]
+            lo, hi = out["ci"][k]
+            assert lo <= hi
+            assert out["samples"][k].shape == (50,)
+        assert out["n_boot"] == 50
+        assert out["ci_level"] == 0.95
+
+    def test_point_matches_variance_components(self):
+        df = self._df()
+        out = bootstrap_variance_components(df, n_boot=10, seed=0)
+        vc = variance_components(df)
+        for k in ("subject", "item", "subject_item", "residual"):
+            assert out[k] == pytest.approx(vc[k])
+
+    def test_reproducibility_under_seed(self):
+        df = self._df()
+        a = bootstrap_variance_components(df, n_boot=30, seed=123)
+        b = bootstrap_variance_components(df, n_boot=30, seed=123)
+        for k in ("subject", "item", "subject_item", "residual"):
+            np.testing.assert_allclose(a["samples"][k], b["samples"][k])
+            assert a["ci"][k] == b["ci"][k]
+
+    def test_different_seeds_differ(self):
+        df = self._df()
+        a = bootstrap_variance_components(df, n_boot=30, seed=1)
+        b = bootstrap_variance_components(df, n_boot=30, seed=2)
+        assert not np.allclose(a["samples"]["subject"], b["samples"]["subject"])
+
+    @pytest.mark.slow
+    def test_ci_brackets_point_estimate_for_dominant_component(self):
+        # For the component with by far the largest signal, percentile CI on a
+        # well-behaved design should bracket the point estimate.
+        df = _synth_crossed_design(n_p=60, n_i=12, n_r=2, sigma_p=2.0, sigma_i=0.2, sigma_pi=0.2, sigma_e=0.2, seed=7)
+        out = bootstrap_variance_components(df, n_boot=200, seed=7)
+        lo, hi = out["ci"]["subject"]
+        assert lo <= out["subject"] <= hi
+
+    @pytest.mark.slow
+    def test_custom_ci_level(self):
+        df = self._df()
+        narrow = bootstrap_variance_components(df, n_boot=200, ci=0.50, seed=5)
+        wide = bootstrap_variance_components(df, n_boot=200, ci=0.95, seed=5)
+        lo_n, hi_n = narrow["ci"]["subject"]
+        lo_w, hi_w = wide["ci"]["subject"]
+        assert (hi_w - lo_w) >= (hi_n - lo_n)
+
+    def test_invalid_n_boot_raises(self):
+        with pytest.raises(ValueError, match="n_boot must be >= 1"):
+            bootstrap_variance_components(self._df(), n_boot=0)
+
+    def test_invalid_ci_raises(self):
+        with pytest.raises(ValueError, match=r"ci must be in \(0, 1\)"):
+            bootstrap_variance_components(self._df(), n_boot=10, ci=1.5)
+
+    @pytest.mark.slow
+    def test_g_coefficient_ci_via_samples(self):
+        # Users derive G-coefficient CIs by mapping g_coefficient over the
+        # returned samples. Verify this composes cleanly.
+        df = self._df()
+        out = bootstrap_variance_components(df, n_boot=100, seed=0)
+        g_samples = np.array(
+            [
+                g_coefficient(
+                    {
+                        "subject": s,
+                        "item": i,
+                        "subject_item": pi,
+                        "residual": e,
+                    },
+                    n_items=8,
+                    n_reps=2,
+                    type="absolute",
+                )
+                for s, i, pi, e in zip(
+                    out["samples"]["subject"],
+                    out["samples"]["item"],
+                    out["samples"]["subject_item"],
+                    out["samples"]["residual"],
+                    strict=True,
+                )
+            ]
+        )
+        g_lo, g_hi = np.quantile(g_samples, [0.025, 0.975])
+        assert 0.0 <= g_lo <= g_hi <= 1.0
 
 
 def test_end_to_end_pipeline():

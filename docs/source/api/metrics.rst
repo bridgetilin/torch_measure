@@ -33,6 +33,8 @@ Generalizability
 
 .. autofunction:: torch_measure.metrics.d_study
 
+.. autofunction:: torch_measure.metrics.bootstrap_variance_components
+
 Calibration
 -----------
 
