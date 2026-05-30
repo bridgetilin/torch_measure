@@ -2,7 +2,11 @@
 
 """Psychometric metrics for measurement analysis."""
 
-from torch_measure.metrics.assumptions import normality_check, tukey_nonadditivity_test
+from torch_measure.metrics.assumptions import (
+    levene_homogeneity_test,
+    normality_check,
+    tukey_nonadditivity_test,
+)
 from torch_measure.metrics.calibration import brier_score, expected_calibration_error
 from torch_measure.metrics.correlation import point_biserial_correlation, tetrachoric_correlation
 from torch_measure.metrics.generalizability import (
@@ -46,6 +50,7 @@ __all__ = [
     "bootstrap_variance_components",
     "normality_check",
     "tukey_nonadditivity_test",
+    "levene_homogeneity_test",
     "mokken_scalability",
     "expected_calibration_error",
     "brier_score",

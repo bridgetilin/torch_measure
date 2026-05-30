@@ -212,3 +212,78 @@ def tukey_nonadditivity_test(
         "ss_nonadditivity": float(ss_nonadd),
         "ss_remainder": float(ss_remainder),
     }
+
+
+def levene_homogeneity_test(
+    response_matrix: pd.DataFrame,
+    group_by: str = "item",
+    subject_col: str = "subject_id",
+    item_col: str = "item_id",
+    trial_col: str = "trial",
+    response_col: str = "response",
+    center: str = "median",
+) -> dict:
+    """Levene's test for homogeneity of variance across items or subjects.
+
+    G-theory's residual term assumes constant within-cell variance. Levene
+    tests whether the variance of the response differs across the chosen
+    grouping. Uses the median-centered (Brown-Forsythe) variant by default
+    for robustness.
+
+    Parameters
+    ----------
+    response_matrix : pandas.DataFrame
+        Long-form responses; same schema as
+        :func:`torch_measure.metrics.variance_components`.
+    group_by : {"item", "subject"}
+        Which axis to test variance constancy across.
+    subject_col, item_col, trial_col, response_col : str
+        Column names.
+    center : {"median", "mean", "trimmed"}
+        Centering for Levene's test; forwarded to ``scipy.stats.levene``.
+        ``"median"`` (default) is the Brown-Forsythe variant.
+
+    Returns
+    -------
+    dict
+        Keys: ``test`` (``"levene"``), ``group_by``, ``center``,
+        ``statistic`` (W), ``p_value``, ``n_groups``, ``group_sizes``
+        (list[int]), ``group_variances`` (list[float], ddof=1).
+    """
+    from scipy import stats
+
+    if group_by not in {"item", "subject"}:
+        raise ValueError(f"group_by must be 'item' or 'subject'; got {group_by!r}.")
+    if center not in {"median", "mean", "trimmed"}:
+        raise ValueError(f"center must be 'median', 'mean', or 'trimmed'; got {center!r}.")
+
+    parts = _cell_decomposition(response_matrix, subject_col, item_col, trial_col, response_col)
+    df = parts["df"]
+    key_col = item_col if group_by == "item" else subject_col
+
+    groups: list[np.ndarray] = []
+    sizes: list[int] = []
+    variances: list[float] = []
+    for _, block in df.groupby(key_col, sort=True):
+        values = block[response_col].to_numpy(dtype=float)
+        if values.size < 2:
+            continue
+        groups.append(values)
+        sizes.append(int(values.size))
+        variances.append(float(np.var(values, ddof=1)))
+
+    if len(groups) < 2:
+        raise ValueError(f"Need at least 2 groups with >= 2 observations to run Levene's test; got {len(groups)}.")
+
+    w_stat, p_value = stats.levene(*groups, center=center)
+
+    return {
+        "test": "levene",
+        "group_by": group_by,
+        "center": center,
+        "statistic": float(w_stat),
+        "p_value": float(p_value),
+        "n_groups": len(groups),
+        "group_sizes": sizes,
+        "group_variances": variances,
+    }

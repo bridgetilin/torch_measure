@@ -4,7 +4,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from torch_measure.metrics.assumptions import normality_check, tukey_nonadditivity_test
+from torch_measure.metrics.assumptions import (
+    levene_homogeneity_test,
+    normality_check,
+    tukey_nonadditivity_test,
+)
 
 
 def _additive_design(
@@ -130,3 +134,71 @@ class TestTukeyNonadditivity:
         df = df[~((df["subject_id"] == "s0") & (df["item_id"] == "i0"))]
         with pytest.raises(ValueError, match="Unbalanced design"):
             tukey_nonadditivity_test(df)
+
+
+def _heteroscedastic_design(seed: int = 0) -> pd.DataFrame:
+    """Item-specific residual scale: items 0..n_i//2 have small noise, the rest large."""
+    rng = np.random.default_rng(seed)
+    n_p, n_i, n_r = 30, 10, 5
+    a = rng.normal(0.0, 1.0, size=n_p)
+    b = rng.normal(0.0, 0.5, size=n_i)
+    scales = np.where(np.arange(n_i) < n_i // 2, 0.1, 3.0)
+    e = rng.normal(0.0, 1.0, size=(n_p, n_i, n_r)) * scales[None, :, None]
+    y = a[:, None, None] + b[None, :, None] + e
+    rows = [(f"s{p}", f"i{i}", r, float(y[p, i, r])) for p in range(n_p) for i in range(n_i) for r in range(n_r)]
+    return pd.DataFrame(rows, columns=["subject_id", "item_id", "trial", "response"])
+
+
+class TestLeveneHomogeneity:
+    def test_output_structure(self):
+        out = levene_homogeneity_test(_additive_design())
+        for k in (
+            "test",
+            "group_by",
+            "center",
+            "statistic",
+            "p_value",
+            "n_groups",
+            "group_sizes",
+            "group_variances",
+        ):
+            assert k in out
+        assert out["test"] == "levene"
+        assert out["group_by"] == "item"
+        assert out["center"] == "median"
+        assert out["n_groups"] == len(out["group_sizes"]) == len(out["group_variances"])
+
+    def test_homogeneous_not_rejected(self):
+        out = levene_homogeneity_test(_additive_design(seed=4))
+        assert out["p_value"] > 0.01
+
+    def test_heteroscedastic_rejected(self):
+        out = levene_homogeneity_test(_heteroscedastic_design(seed=0))
+        assert out["p_value"] < 0.01
+
+    def test_group_by_subject(self):
+        out = levene_homogeneity_test(_additive_design(n_p=15, n_i=8, n_r=4), group_by="subject")
+        assert out["group_by"] == "subject"
+        assert out["n_groups"] == 15
+
+    def test_center_mean(self):
+        out_med = levene_homogeneity_test(_heteroscedastic_design(seed=1), center="median")
+        out_mean = levene_homogeneity_test(_heteroscedastic_design(seed=1), center="mean")
+        assert out_med["center"] == "median"
+        assert out_mean["center"] == "mean"
+        # Both should detect strong heteroscedasticity.
+        assert out_med["p_value"] < 0.01
+        assert out_mean["p_value"] < 0.01
+
+    def test_unknown_group_by_raises(self):
+        with pytest.raises(ValueError, match="group_by must be"):
+            levene_homogeneity_test(_additive_design(), group_by="bogus")
+
+    def test_unknown_center_raises(self):
+        with pytest.raises(ValueError, match="center must be"):
+            levene_homogeneity_test(_additive_design(), center="bogus")
+
+    def test_missing_columns_raises(self):
+        df = _additive_design().drop(columns=["item_id"])
+        with pytest.raises(ValueError, match="Missing required columns"):
+            levene_homogeneity_test(df)

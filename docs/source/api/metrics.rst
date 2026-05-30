@@ -42,6 +42,8 @@ Assumption checks
 
 .. autofunction:: torch_measure.metrics.tukey_nonadditivity_test
 
+.. autofunction:: torch_measure.metrics.levene_homogeneity_test
+
 Calibration
 -----------
 
